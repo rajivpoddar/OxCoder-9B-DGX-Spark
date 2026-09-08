@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="${1:-http://127.0.0.1:30000}"
+MODEL="${2:-neohorse-1-9b}"
+
+curl -fsS "$BASE_URL/v1/models" | grep -q "$MODEL"
+
+response=$(curl -fsS "$BASE_URL/v1/chat/completions" \
+  -H 'content-type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"max_tokens\":32,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false},\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly NEOHORSE_OK\"}]}")
+grep -q 'NEOHORSE_OK' <<<"$response"
+python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; assert m.get("reasoning_content") in (None, ""), m' <<<"$response"
+
+tool_response=$(curl -fsS "$BASE_URL/v1/chat/completions" \
+  -H 'content-type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"max_tokens\":96,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false},\"messages\":[{\"role\":\"user\",\"content\":\"Call get_status for neohorse.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_status\",\"description\":\"Get service status\",\"parameters\":{\"type\":\"object\",\"properties\":{\"service\":{\"type\":\"string\"}},\"required\":[\"service\"]}}}],\"tool_choice\":\"auto\"}")
+grep -Eq 'tool_calls|get_status' <<<"$tool_response"
+
+stream_response=$(curl -fsS -N "$BASE_URL/v1/chat/completions" \
+  -H 'content-type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"stream\":true,\"max_tokens\":16,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false},\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}]}")
+grep -q 'data:' <<<"$stream_response"
+
+echo "NeoHorse direct API smoke tests passed"

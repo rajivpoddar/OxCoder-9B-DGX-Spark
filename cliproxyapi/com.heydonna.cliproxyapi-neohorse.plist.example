@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.heydonna.cliproxyapi-neohorse</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi</string>
+    <string>-config</string>
+    <string>/Users/rajiv/.config/cliproxyapi/neohorse.conf</string>
+    <string>-local-model</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/rajiv/.cli-proxy-api-neohorse/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/rajiv/.cli-proxy-api-neohorse/stderr.log</string>
+</dict>
+</plist>
