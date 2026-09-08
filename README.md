@@ -17,6 +17,7 @@ This repository is adapted from our [Ornith-1.5 DGX Spark recipe](https://github
 | Reasoning parser | `qwen3` |
 | Tool parser | `qwen3_coder` |
 | Thinking | Off by default; set `ENABLE_THINKING=true` to enable |
+| Prometheus metrics | Enabled by default at `/metrics` |
 | API | OpenAI-compatible, port 30000 |
 
 The model is text-only. The authors report that its base architecture can be extended toward one million tokens, but this recipe deliberately starts at the native, evaluated 262K context.
@@ -44,6 +45,18 @@ The launcher refuses to replace an existing NeoHorse container, refuses an occup
 ```bash
 PORT=30002 MAX_RUNNING_REQUESTS=2 CONTEXT_LENGTH=131072 ./start.sh
 ```
+
+Prometheus metrics are enabled by default for observability. Verify them with:
+
+```bash
+curl -fsS http://127.0.0.1:30000/metrics | grep '^sglang:' | head
+```
+
+Set `ENABLE_METRICS=false` only when intentionally running without metrics, and
+run the smoke test with `EXPECT_METRICS=false` in that case. Spark Dashboard's
+current inference adapter is vLLM-specific, so exposing this endpoint is the
+recipe-side prerequisite; the dashboard still needs an SGLang adapter before
+its inference panels can consume these metrics.
 
 Stop it with:
 

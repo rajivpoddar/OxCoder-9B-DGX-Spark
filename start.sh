@@ -13,6 +13,7 @@ CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-4}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
 ENABLE_THINKING="${ENABLE_THINKING:-false}"
+ENABLE_METRICS="${ENABLE_METRICS:-true}"
 MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-48}"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 CONTAINER_HF="/root/.cache/huggingface"
@@ -20,6 +21,11 @@ CONTAINER_HF="/root/.cache/huggingface"
 case "$ENABLE_THINKING" in
   true|false) ;;
   *) echo "ENABLE_THINKING must be true or false" >&2; exit 2 ;;
+esac
+
+case "$ENABLE_METRICS" in
+  true|false) ;;
+  *) echo "ENABLE_METRICS must be true or false" >&2; exit 2 ;;
 esac
 
 for command in docker curl; do
@@ -89,6 +95,10 @@ fi
 
 MODEL_IN_CONTAINER="$CONTAINER_HF/${MODEL#"$HF_CACHE"/}"
 CHAT_TEMPLATE_KWARGS="{\"enable_thinking\":$ENABLE_THINKING}"
+METRICS_ARGS=()
+if [[ "$ENABLE_METRICS" == "true" ]]; then
+  METRICS_ARGS+=(--enable-metrics)
+fi
 
 docker run -d \
   --name "$CONTAINER" \
@@ -108,6 +118,7 @@ docker run -d \
     --mem-fraction-static "$MEM_FRACTION_STATIC" \
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
+    "${METRICS_ARGS[@]}" \
     --default-chat-template-kwargs "$CHAT_TEMPLATE_KWARGS"
 
 echo "Launched $CONTAINER; waiting for http://127.0.0.1:$PORT/health"

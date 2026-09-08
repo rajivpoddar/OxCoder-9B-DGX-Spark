@@ -3,8 +3,18 @@ set -euo pipefail
 
 BASE_URL="${1:-http://127.0.0.1:30000}"
 MODEL="${2:-neohorse-1-9b}"
+EXPECT_METRICS="${EXPECT_METRICS:-true}"
+
+case "$EXPECT_METRICS" in
+  true|false) ;;
+  *) echo "EXPECT_METRICS must be true or false" >&2; exit 2 ;;
+esac
 
 curl -fsS "$BASE_URL/v1/models" | grep -q "$MODEL"
+
+if [[ "$EXPECT_METRICS" == "true" ]]; then
+  curl -fsS "$BASE_URL/metrics" | awk '/^sglang:/ { found=1 } END { exit !found }'
+fi
 
 response=$(curl -fsS "$BASE_URL/v1/chat/completions" \
   -H 'content-type: application/json' \
