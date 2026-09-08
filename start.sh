@@ -22,12 +22,25 @@ case "$ENABLE_THINKING" in
   *) echo "ENABLE_THINKING must be true or false" >&2; exit 2 ;;
 esac
 
-for command in docker hf curl; do
+for command in docker curl; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command not found: $command" >&2
     exit 1
   }
 done
+
+HF_CLI="${HF_CLI:-}"
+if [[ -z "$HF_CLI" ]]; then
+  if command -v hf >/dev/null 2>&1; then
+    HF_CLI="$(command -v hf)"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_CLI="$(command -v huggingface-cli)"
+  else
+    echo "required Hugging Face CLI not found; set HF_CLI to an existing hf or huggingface-cli binary" >&2
+    exit 1
+  fi
+fi
+[[ -x "$HF_CLI" ]] || { echo "HF_CLI is not executable: $HF_CLI" >&2; exit 1; }
 
 if [[ -f "$HF_CACHE/token" ]]; then
   HF_TOKEN="$(<"$HF_CACHE/token")"
@@ -36,7 +49,7 @@ if [[ -f "$HF_CACHE/token" ]]; then
 fi
 
 echo "Ensuring $REPO@$REVISION is cached..."
-hf download "$REPO" --revision "$REVISION"
+"$HF_CLI" download "$REPO" --revision "$REVISION"
 
 MODEL="$HF_CACHE/hub/models--TokenRhythm--NeoHorse-1-9B/snapshots/$REVISION"
 for required in config.json tokenizer_config.json model.safetensors.index.json chat_template.jinja; do

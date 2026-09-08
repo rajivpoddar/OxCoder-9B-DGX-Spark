@@ -28,6 +28,7 @@ DOWNLOAD_ONLY=1 ./start.sh
 ```
 
 This is safe to run while another inference backend is serving because it only populates the Hugging Face cache.
+The launcher accepts either `hf` or `huggingface-cli`. If the client is installed in a virtual environment outside `PATH`, set `HF_CLI=/absolute/path/to/hf`.
 
 ## Start and validate
 
