@@ -1,6 +1,6 @@
 # NeoHorse-1-9B on one DGX Spark
 
-Serve [TokenRhythm/NeoHorse-1-9B](https://huggingface.co/TokenRhythm/NeoHorse-1-9B) on a single NVIDIA DGX Spark with the model authors' tested SGLang 0.5.17 runtime, native 262,144-token context, Qwen reasoning/tool parsers, and native OpenAI- and Anthropic-compatible APIs.
+Serve [TokenRhythm/NeoHorse-1-9B](https://huggingface.co/TokenRhythm/NeoHorse-1-9B) on a single NVIDIA DGX Spark with SGLang 0.5.19, native 262,144-token context, Qwen reasoning/tool parsers, and native OpenAI- and Anthropic-compatible APIs.
 
 This repository is adapted from our [Ornith-1.5 DGX Spark recipe](https://github.com/rajivpoddar/Ornith-1.5-35B-A3B-DGX-Spark). It preserves its defensive download, memory, port, container, and readiness checks while removing Ornith-specific NVFP4, MoE, MTP, and b12x patches.
 
@@ -11,7 +11,7 @@ This repository is adapted from our [Ornith-1.5 DGX Spark recipe](https://github
 | Checkpoint | `TokenRhythm/NeoHorse-1-9B` |
 | Pinned revision | `6cd9248d8070d8a0ad8d20aa19e2fe6848419e93` |
 | Weights | BF16, approximately 18 GB |
-| Runtime | `lmsysorg/sglang:v0.5.17-cu130` |
+| Runtime | `lmsysorg/sglang:v0.5.19-cu130` |
 | Context | 262,144 tokens |
 | Concurrent requests | 4 |
 | Reasoning parser | `qwen3` |
@@ -87,7 +87,7 @@ Before moving a slot, test non-streaming, streaming, tool calls, tool results, c
 
 ## Benchmark status
 
-No DGX Spark throughput claim is included yet. The upstream evaluation used SGLang 0.5.17 with thinking enabled; it did not publish Spark-specific TPS, concurrency, prefix-cache, or Claude Code results. Add measurements only after a clean local C1/C2/C4 sweep.
+No DGX Spark throughput claim is included yet. The upstream evaluation used SGLang 0.5.17 with thinking enabled, while this recipe uses SGLang 0.5.19 for its newer runtime and native Anthropic API fixes. The upstream evaluation did not publish Spark-specific TPS, concurrency, prefix-cache, or Claude Code results. Add measurements only after a clean local C1/C2/C4 sweep.
 
 ## License
 

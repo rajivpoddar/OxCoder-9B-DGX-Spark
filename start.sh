@@ -2,7 +2,7 @@
 # Serve NeoHorse-1-9B on one NVIDIA DGX Spark with SGLang.
 set -euo pipefail
 
-IMAGE="${IMAGE:-lmsysorg/sglang:v0.5.17-cu130}"
+IMAGE="${IMAGE:-lmsysorg/sglang:v0.5.19-cu130}"
 CONTAINER="${CONTAINER:-neohorse-1-9b-sglang}"
 REPO="TokenRhythm/NeoHorse-1-9B"
 REVISION="${REVISION:-6cd9248d8070d8a0ad8d20aa19e2fe6848419e93}"
