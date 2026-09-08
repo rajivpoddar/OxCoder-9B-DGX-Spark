@@ -1,6 +1,6 @@
 # NeoHorse-1-9B on one DGX Spark
 
-Serve [TokenRhythm/NeoHorse-1-9B](https://huggingface.co/TokenRhythm/NeoHorse-1-9B) on a single NVIDIA DGX Spark with the model authors' tested SGLang 0.5.17 runtime, native 262,144-token context, Qwen reasoning/tool parsers, and an OpenAI-compatible API.
+Serve [TokenRhythm/NeoHorse-1-9B](https://huggingface.co/TokenRhythm/NeoHorse-1-9B) on a single NVIDIA DGX Spark with the model authors' tested SGLang 0.5.17 runtime, native 262,144-token context, Qwen reasoning/tool parsers, and native OpenAI- and Anthropic-compatible APIs.
 
 This repository is adapted from our [Ornith-1.5 DGX Spark recipe](https://github.com/rajivpoddar/Ornith-1.5-35B-A3B-DGX-Spark). It preserves its defensive download, memory, port, container, and readiness checks while removing Ornith-specific NVFP4, MoE, MTP, and b12x patches.
 
@@ -60,30 +60,30 @@ Thinking is disabled server-side by default using the model's native chat-templa
 
 Set `ENABLE_THINKING=true` before launch to reproduce the thinking-enabled protocol used by the authors' published benchmark. Do not compare thinking-on quality results with thinking-off latency results as if they were the same workload.
 
-## CLIProxyAPI bridge for Claude Code
+## Native Anthropic API for Claude Code
 
-The included `cliproxyapi/neohorse.conf.example` translates Claude's Anthropic requests to the Spark's OpenAI-compatible endpoint and enforces thinking off. Install it on the Mac running Claude Code, adjust the DGX address if necessary, and use a dedicated loopback port:
+SGLang exposes `/v1/messages` directly, so Claude Code does not need a protocol proxy. Point Claude Code at the DGX server:
 
 ```bash
-mkdir -p ~/.config/cliproxyapi ~/.cli-proxy-api-neohorse
-cp cliproxyapi/neohorse.conf.example ~/.config/cliproxyapi/neohorse.conf
-cp cliproxyapi/com.heydonna.cliproxyapi-neohorse.plist.example \
-  ~/Library/LaunchAgents/com.heydonna.cliproxyapi-neohorse.plist
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.heydonna.cliproxyapi-neohorse.plist
+export ANTHROPIC_BASE_URL="http://192.168.68.113:30000"
+export ANTHROPIC_AUTH_TOKEN="dummy"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="neohorse-1-9b"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="neohorse-1-9b"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="neohorse-1-9b"
+claude
 ```
 
-Validate the translated API before pointing a Claude slot at it:
+Validate the native endpoint before pointing a Claude slot at it:
 
 ```bash
-curl -fsS http://127.0.0.1:8320/v1/messages \
+curl -fsS http://192.168.68.113:30000/v1/messages \
   -H 'content-type: application/json' \
-  -H 'x-api-key: local-neohorse-loopback' \
+  -H 'x-api-key: dummy' \
   -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"neohorse-1-9b","max_tokens":32,"messages":[{"role":"user","content":"Reply NEOHORSE_PROXY_OK"}]}'
+  -d '{"model":"neohorse-1-9b","max_tokens":32,"messages":[{"role":"user","content":"Reply NEOHORSE_ANTHROPIC_OK"}]}'
 ```
 
-The bridge is an integration aid, not proof of Claude Code compatibility. Before moving a slot, test non-streaming, streaming, tool calls, tool results, cancellation, and compaction through the exact proxy route.
+Before moving a slot, test non-streaming, streaming, tool calls, tool results, cancellation, and compaction through this exact native route.
 
 ## Benchmark status
 

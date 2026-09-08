@@ -22,4 +22,19 @@ stream_response=$(curl -fsS -N "$BASE_URL/v1/chat/completions" \
   -d "{\"model\":\"$MODEL\",\"stream\":true,\"max_tokens\":16,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false},\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}]}")
 grep -q 'data:' <<<"$stream_response"
 
-echo "NeoHorse direct API smoke tests passed"
+anthropic_response=$(curl -fsS "$BASE_URL/v1/messages" \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: dummy' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "{\"model\":\"$MODEL\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly NEOHORSE_ANTHROPIC_OK\"}]}")
+grep -q 'NEOHORSE_ANTHROPIC_OK' <<<"$anthropic_response"
+
+anthropic_stream=$(curl -fsS -N "$BASE_URL/v1/messages" \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: dummy' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "{\"model\":\"$MODEL\",\"stream\":true,\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}]}")
+grep -q 'event: message_start' <<<"$anthropic_stream"
+grep -q 'event: message_stop' <<<"$anthropic_stream"
+
+echo "NeoHorse OpenAI and native Anthropic API smoke tests passed"
