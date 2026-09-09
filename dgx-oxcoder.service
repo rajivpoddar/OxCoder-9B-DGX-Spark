@@ -1,0 +1,26 @@
+[Unit]
+Description=OxCoder 9B Q5_K_M llama.cpp inference server
+Wants=network-online.target
+After=network-online.target
+Conflicts=dgx-muse-glimmer.service
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/home/user/serve/oxcoder-9b
+Environment=HOME=/home/user
+Environment=PORT=30000
+Environment=STATE_DIR=/home/user/serve/oxcoder-9b/.state
+Environment=LLAMA_CPP_DIR=/home/user/.local/share/llama.cpp-neohorse
+Environment=HF_CLI=/home/user/serve/muse-glimmer-mia/.venv/bin/hf
+ExecStart=/bin/bash -lc 'set -Eeuo pipefail; ./start.sh; pid="$(cat .state/server.pid)"; while kill -0 "$pid"; do sleep 5; done; exit 1'
+ExecStop=/home/user/serve/oxcoder-9b/stop.sh
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+TimeoutStopSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
