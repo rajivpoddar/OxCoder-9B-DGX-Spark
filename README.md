@@ -23,6 +23,7 @@ runtime.
 | Runtime | Native CUDA llama.cpp at pinned revision |
 | Context allocation | 262,144 tokens per slot |
 | Concurrent slots | 4 (1,048,576 tokens of shared KV allocation) |
+| Prefill fairness | 128 shared prompt tokens/update while decoding; fair full batches otherwise |
 | KV cache | Q8_0 keys and values |
 | Thinking | Disabled server-side with `--reasoning off` |
 | Speculative decoding | Draftless shared `ngram-mod` cache (`24/48/64`) |
@@ -151,6 +152,30 @@ supported quantized checkpoint when evaluating OxCoder under vLLM rather than
 using GGUF as the production path.
 
 ## Context and concurrency
+
+### Fair prefill scheduling
+
+The recipe applies `patches/prefill-fairness.patch` to the pinned llama.cpp
+revision before building. It adapts [tultr/llama.cpp PR #4](https://github.com/tultr/llama.cpp/pull/4):
+`PREFILL_CHUNK_SIZE=128` limits the aggregate prompt-token budget while other
+requests generate, excluding generation and DFlash verification tokens. Pending
+prompts share the budget. Without active generation they share the normal full
+batch; a rotating start position prevents low slot IDs monopolizing small budgets.
+This trades peak mixed-load prefill throughput for interactive responsiveness.
+
+Set `PREFILL_CHUNK_SIZE=0` and restart for the legacy scheduling control/rollback.
+The model, four-slot context allocation, cache checkpoints and speculation mode
+are unchanged. This does not repair cache misses caused by changing prompts.
+`prepare-runtime.sh` accepts only a clean dependency or this exact overlay on the
+pinned HEAD; unrelated staged, untracked or modified dependency files are refused.
+
+Validate with `python3 -m unittest discover -s tests -p 'test_runtime_overlay.py'`
+and the patched runtime's `test-arg-parser`. With normal inference clients paused,
+run `python3 benchmark-prefill-fairness.py --label legacy` at budget 0 and then
+`--label fair128` at budget 128. The harness uses only synthetic requests and
+disconnects only its own generator. Compare cached-response latency, progress of
+the long prefill, and decode delivery gaps in both mixed and pure-prefill cases.
+
 
 The pinned llama.cpp runtime exposes `--kv-unified-per-slot`, so the recipe
 allocates the context limit explicitly instead of relying on implicit division.

@@ -1,0 +1,160 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 74241f931285889224e148f1cb2eef74c0f7a1bc..5f42ed6a0d174f3f3c0b924b35eb9c92611b0902 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2582,6 +2582,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.cont_batching = value;
+         }
+     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CONT_BATCHING"));
++    add_opt(common_arg(
++        {"--prefill-chunk-size"}, "N",
++        string_format("shared prompt-token budget while generating; also fairly shares pure-prefill batches (0 = legacy scheduling, default: %d)", params.prefill_chunk_size),
++        [](common_params & params, int value) {
++            if (value < 0) {
++                throw std::invalid_argument("prefill chunk size must be >= 0");
++            }
++            params.prefill_chunk_size = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PREFILL_CHUNK_SIZE"));
+     add_opt(common_arg(
+         {"-mm", "--mmproj"}, "FILE",
+         "path to a multimodal projector file. see tools/mtmd/README.md\n"
+diff --git a/common/common.h b/common/common.h
+index 63d0badd0f7465b804b62128b64c5cc8dd115862..3918479343b029a082e195fe44da628521c96675 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -629,6 +629,7 @@ struct common_params {
+     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
+     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
++    int32_t prefill_chunk_size  = 0;     // shared prompt budget during generation; 0 keeps legacy scheduling
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+ 
+     std::string hostname      = "127.0.0.1";
+diff --git a/tests/test-arg-parser.cpp b/tests/test-arg-parser.cpp
+index e0907631abd8a89e5b6dbadf10d28b65ed483b9a..a18e368f0865483678a89296f83a548e295b3d12 100644
+--- a/tests/test-arg-parser.cpp
++++ b/tests/test-arg-parser.cpp
+@@ -229,6 +229,9 @@ static void test(void) {
+     argv = {"binary_name", "-lm", "hello"};
+     assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+ 
++    argv = {"binary_name", "--prefill-chunk-size", "-1"};
++    assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SERVER));
++
+     printf("test-arg-parser: test valid usage\n\n");
+ 
+     argv = {"binary_name", "-m", "model_file.gguf"};
+@@ -290,6 +293,17 @@ static void test(void) {
+     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+     assert(params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK);
+ 
++    {
++        common_params server_params;
++        assert(server_params.prefill_chunk_size == 0);
++        argv = {"binary_name", "--prefill-chunk-size", "128"};
++        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), server_params, LLAMA_EXAMPLE_SERVER));
++        assert(server_params.prefill_chunk_size == 128);
++        argv = {"binary_name", "--prefill-chunk-size", "0"};
++        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), server_params, LLAMA_EXAMPLE_SERVER));
++        assert(server_params.prefill_chunk_size == 0);
++    }
++
+     argv = {"binary_name", "-lm", "dio"};
+     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
+     assert(params.load_mode == LLAMA_LOAD_MODE_DIRECT_IO);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index fe068d3e9104f7d2fa1405f827acc22e072b768b..afa825d2b9419497852514553c845d7461904429 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2906,6 +2906,8 @@ private:
+         }
+     }
+ 
++    size_t prefill_cursor = 0;
++
+     void pre_decode() {
+         // apply context-shift if needed
+         // TODO: simplify and improve
+@@ -3104,6 +3106,30 @@ private:
+         int32_t n_batch  = llama_n_batch(ctx_tgt);
+         int32_t n_ubatch = llama_n_ubatch(ctx_tgt);
+ 
++        // Adapted from tultr/llama.cpp#4. Keep generation/draft tokens outside
++        // the prompt budget. With no generation, share the full batch rather
++        // than allowing a long first prompt to starve a cached follow-up.
++        const bool fair_prefill = params_base.prefill_chunk_size > 0;
++        const int32_t prefill_budget = fair_prefill && !generating.empty()
++            ? std::min(n_batch, params_base.prefill_chunk_size) : n_batch;
++        int32_t prefill_tokens_added = 0;
++        int32_t prompt_slots_remaining = 0;
++        std::vector<server_slot *> prefill_order;
++        for (auto & slot : slots) {
++            prefill_order.push_back(&slot);
++            if (fair_prefill && slot.is_processing() && slot.can_split() &&
++                (!slot_batched || slot_batched->can_batch_with(slot)) &&
++                (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED)) {
++                ++prompt_slots_remaining;
++            }
++        }
++        if (fair_prefill && !prefill_order.empty()) {
++            // Also guarantee progress when the configured budget is smaller
++            // than the number of prompts; never permanently favor low IDs.
++            const auto first = prefill_cursor++ % prefill_order.size();
++            std::rotate(prefill_order.begin(), prefill_order.begin() + first, prefill_order.end());
++        }
++
+         auto & alora_scale       = batch.alora_scale;
+         auto & alora_disabled_id = batch.alora_disabled_id;
+ 
+@@ -3111,7 +3137,7 @@ private:
+         if (params_base.cont_batching || batch.size() == 0) {
+             bool add_ok = true; // false means the batch is full, skip remaining slots
+ 
+-            iterate(slots, [&](server_slot & slot) {
++            iterate(prefill_order, [&](server_slot & slot) {
+                 if (!add_ok || batch.size() >= n_batch) {
+                     return; // batch is full, skip remaining slots
+                 }
+@@ -3135,6 +3161,17 @@ private:
+                 if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
+                     const auto & input_tokens = slot.task->tokens;
+ 
++                    const bool limit_prefill = fair_prefill && slot.can_split();
++                    int32_t slot_prefill_budget = n_batch;
++                    if (limit_prefill) {
++                        const int32_t remaining = std::max(0, prefill_budget - prefill_tokens_added);
++                        if (remaining == 0) {
++                            return;
++                        }
++                        slot_prefill_budget = std::max(1, remaining / std::max(1, prompt_slots_remaining));
++                        --prompt_slots_remaining;
++                    }
++
+                     // used to determine the number of tokens added to the batch for the current slot
+                     const auto n_tokens_prev = batch.size();
+ 
+@@ -3521,7 +3558,10 @@ private:
+                     const auto last_user_pos = spans.last_user_message_pos();
+ 
+                     // add prompt tokens for processing in the current batch
+-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
++                    int32_t slot_prefill_tokens_added = 0;
++                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch &&
++                           (!limit_prefill || (prefill_tokens_added < prefill_budget &&
++                                              slot_prefill_tokens_added < slot_prefill_budget))) {
+                         // get next token to process
+                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                         if (cur_tok == LLAMA_TOKEN_NULL) {
+@@ -3546,6 +3586,11 @@ private:
+                             /* is_prompt = */ true);
+                         slot.prompt.tokens.push_back(cur_tok);
+ 
++                        if (limit_prefill) {
++                            ++prefill_tokens_added;
++                            ++slot_prefill_tokens_added;
++                        }
++
+                         // break at the last user message, or at user messages at least min step past the last checkpoint
+                         if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
+                             const auto pos = slot.prompt.n_tokens();

@@ -10,6 +10,7 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-30000}"
 CONTEXT_PER_SLOT="${CONTEXT_PER_SLOT:-262144}"
 PARALLEL="${PARALLEL:-4}"
+PREFILL_CHUNK_SIZE="${PREFILL_CHUNK_SIZE:-128}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
 SPEC_TYPE="${SPEC_TYPE:-ngram-mod}"
@@ -75,6 +76,10 @@ for toggle in ENABLE_METRICS_BRIDGE ENABLE_DASHBOARD; do
 done
 
 SPEC_ARGS=()
+[[ "$PREFILL_CHUNK_SIZE" =~ ^(0|[1-9][0-9]{0,9})$ ]] && (( PREFILL_CHUNK_SIZE <= 2147483647 )) || {
+  echo "PREFILL_CHUNK_SIZE must be a non-negative 32-bit integer" >&2
+  exit 2
+}
 case "$SPEC_TYPE" in
   none|"") ;;
   ngram-mod)
@@ -117,21 +122,7 @@ if [[ "${DOWNLOAD_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ ! -d "$LLAMA_CPP_DIR/.git" ]]; then
-  [[ ! -e "$LLAMA_CPP_DIR" ]] || {
-    echo "refusing to replace non-git path: $LLAMA_CPP_DIR" >&2
-    exit 1
-  }
-  git clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"
-fi
-
-if [[ -n "$(git -C "$LLAMA_CPP_DIR" status --porcelain)" ]]; then
-  echo "refusing to change dirty llama.cpp checkout: $LLAMA_CPP_DIR" >&2
-  exit 1
-fi
-
-git -C "$LLAMA_CPP_DIR" fetch --quiet origin "$LLAMA_CPP_REVISION"
-git -C "$LLAMA_CPP_DIR" checkout --quiet --detach "$LLAMA_CPP_REVISION"
+bash "$RECIPE_DIR/prepare-runtime.sh" "$LLAMA_CPP_DIR" "$LLAMA_CPP_REVISION"
 
 echo "Building llama.cpp $LLAMA_CPP_REVISION for GB10 (sm_121)..."
 cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" \
@@ -212,6 +203,7 @@ nohup "$SERVER" \
   --parallel "$PARALLEL" \
   --kv-unified-per-slot "$CONTEXT_PER_SLOT" \
   --cont-batching \
+  --prefill-chunk-size "$PREFILL_CHUNK_SIZE" \
   --cache-prompt \
   --flash-attn on \
   --cache-type-k "$CACHE_TYPE_K" \
