@@ -25,6 +25,7 @@ runtime.
 | Concurrent slots | 4 (1,048,576 tokens of shared KV allocation) |
 | KV cache | Q8_0 keys and values |
 | Thinking | Disabled server-side with `--reasoning off` |
+| Speculative decoding | Draftless shared `ngram-mod` cache (`24/48/64`) |
 | Raw metrics | llama.cpp Prometheus endpoint on port 30000 |
 | HTTP dashboard | Native llama.cpp dashboard on port 8092 |
 | Compatibility bridge | Optional vLLM-named endpoint on localhost:30001 |
@@ -158,6 +159,12 @@ shared KV pool: four independent native-context slots. This is the inherited
 starting configuration and must be validated on the actual OxCoder quant before
 cutover; reduce `PARALLEL`, context, or KV precision if memory headroom is
 insufficient.
+
+Draftless speculative decoding is enabled by default with llama.cpp's shared
+`ngram-mod` cache. It requires no secondary draft model and is aimed at
+repetitive coding/editing workloads. Disable it for an A/B baseline with
+`SPEC_TYPE=none`, or tune it with `SPEC_NGRAM_MATCH`, `SPEC_NGRAM_MIN`, and
+`SPEC_NGRAM_MAX` (defaults: `24`, `48`, and `64`).
 
 For a smaller single-slot validation:
 

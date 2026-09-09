@@ -12,6 +12,10 @@ CONTEXT_PER_SLOT="${CONTEXT_PER_SLOT:-262144}"
 PARALLEL="${PARALLEL:-4}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
+SPEC_TYPE="${SPEC_TYPE:-ngram-mod}"
+SPEC_NGRAM_MATCH="${SPEC_NGRAM_MATCH:-24}"
+SPEC_NGRAM_MIN="${SPEC_NGRAM_MIN:-48}"
+SPEC_NGRAM_MAX="${SPEC_NGRAM_MAX:-64}"
 MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-32}"
 ENABLE_METRICS_BRIDGE="${ENABLE_METRICS_BRIDGE:-false}"
 METRICS_BRIDGE_HOST="${METRICS_BRIDGE_HOST:-127.0.0.1}"
@@ -66,6 +70,23 @@ for toggle in ENABLE_METRICS_BRIDGE ENABLE_DASHBOARD; do
     *) echo "$toggle must be true or false" >&2; exit 2 ;;
   esac
 done
+
+SPEC_ARGS=()
+case "$SPEC_TYPE" in
+  none|"") ;;
+  ngram-mod)
+    SPEC_ARGS=(
+      --spec-type ngram-mod
+      --spec-ngram-mod-n-match "$SPEC_NGRAM_MATCH"
+      --spec-ngram-mod-n-min "$SPEC_NGRAM_MIN"
+      --spec-ngram-mod-n-max "$SPEC_NGRAM_MAX"
+    )
+    ;;
+  *)
+    echo "unsupported SPEC_TYPE: $SPEC_TYPE (expected none or ngram-mod)" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$MODEL_DIR" "$STATE_DIR" "$(dirname "$LLAMA_CPP_DIR")" "$(dirname "$DASHBOARD_DIR")"
 
@@ -184,6 +205,7 @@ nohup "$SERVER" \
   --chat-template-file "$CHAT_TEMPLATE_FILE" \
   --reasoning off \
   --n-gpu-layers 99 \
+  "${SPEC_ARGS[@]}" \
   --metrics \
   >"$LOG_FILE" 2>&1 &
 server_pid=$!
