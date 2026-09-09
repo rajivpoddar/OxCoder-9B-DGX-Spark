@@ -13,6 +13,8 @@ PARALLEL="${PARALLEL:-4}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
 MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-32}"
+RECIPE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-$RECIPE_DIR/claude-chat-template.jinja}"
 
 LLAMA_CPP_REVISION="${LLAMA_CPP_REVISION:-b31b71f3a076bfc4278daad442203a9c51c6e676}"
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-$HOME/.local/share/llama.cpp-neohorse}"
@@ -40,6 +42,7 @@ if [[ -z "$HF_CLI" ]]; then
   fi
 fi
 [[ -x "$HF_CLI" ]] || { echo "HF_CLI is not executable: $HF_CLI" >&2; exit 1; }
+[[ -s "$CHAT_TEMPLATE_FILE" ]] || { echo "chat template missing: $CHAT_TEMPLATE_FILE" >&2; exit 1; }
 
 mkdir -p "$MODEL_DIR" "$STATE_DIR" "$(dirname "$LLAMA_CPP_DIR")"
 
@@ -125,6 +128,7 @@ nohup "$SERVER" \
   --cache-type-k "$CACHE_TYPE_K" \
   --cache-type-v "$CACHE_TYPE_V" \
   --jinja \
+  --chat-template-file "$CHAT_TEMPLATE_FILE" \
   --reasoning off \
   --n-gpu-layers 99 \
   --metrics \

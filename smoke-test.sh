@@ -26,4 +26,10 @@ stream_response="$(curl -fsS -N "$BASE_URL/v1/chat/completions" \
   -d "{\"model\":\"$MODEL\",\"stream\":true,\"max_tokens\":16,\"temperature\":0,\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}]}")"
 grep -q 'data:' <<<"$stream_response"
 
-echo "NeoHorse Q5_K_M OpenAI API smoke tests passed"
+anthropic_response="$(curl -fsS "$BASE_URL/v1/messages" \
+  -H 'content-type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "{\"model\":\"$MODEL\",\"max_tokens\":24,\"system\":[{\"type\":\"text\",\"text\":\"First system block.\"},{\"type\":\"text\",\"text\":\"Second system block.\"}],\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}]}")"
+python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["type"] == "message" and r["content"], r' <<<"$anthropic_response"
+
+echo "NeoHorse Q5_K_M OpenAI and Anthropic API smoke tests passed"
