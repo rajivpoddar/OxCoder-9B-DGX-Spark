@@ -26,7 +26,8 @@ runtime.
 | KV cache | Q8_0 keys and values |
 | Thinking | Disabled server-side with `--reasoning off` |
 | Raw metrics | llama.cpp Prometheus endpoint on port 30000 |
-| Dashboard bridge | vLLM-named compatibility endpoint on localhost:30001 |
+| HTTP dashboard | Native llama.cpp dashboard on port 8092 |
+| Compatibility bridge | Optional vLLM-named endpoint on localhost:30001 |
 | API | OpenAI and Anthropic Messages-compatible, port 30000 |
 
 This deployment is text-only: it does not download or load the separate vision
@@ -64,7 +65,7 @@ BUILD_ONLY=1 ./start.sh
 ## Start and validate
 
 During an approved maintenance window, stop the existing inference backend and
-confirm ports 30000 and 30001 are free. Then run:
+confirm ports 30000 and 8092 are free. Then run:
 
 ```bash
 ./start.sh
@@ -72,16 +73,16 @@ confirm ports 30000 and 30001 are free. Then run:
 ```
 
 `start.sh` builds the pinned llama.cpp revision using NVIDIA's GB10 CUDA flags,
-starts a managed background process, waits for `/health`, then starts the local
-metrics compatibility bridge. It refuses occupied ports, a dirty llama.cpp
-checkout, a live recorded process, or less than 32 GiB of available memory.
+starts a managed background process, waits for `/health`, then starts a pinned
+copy of LLM Serve Dashboard. It refuses occupied ports, dirty dependency
+checkouts, a live recorded process, or less than 32 GiB of available memory.
 
 Useful inspection commands:
 
 ```bash
 curl -fsS http://127.0.0.1:30000/v1/models
 curl -fsS http://127.0.0.1:30000/metrics | grep '^llamacpp:' | head
-curl -fsS http://127.0.0.1:30001/metrics | grep '^vllm:'
+curl -fsS http://127.0.0.1:8092/metrics | python3 -m json.tool | head
 tail -f ~/.local/state/oxcoder-9b-gguf/server.log
 ```
 
@@ -91,36 +92,53 @@ Stop only the processes managed by this recipe:
 ./stop.sh
 ```
 
-## Spark Dashboard metrics
+## HTTP metrics dashboard
 
 llama.cpp already exports native Prometheus metrics when launched with
-`--metrics`; Prometheus and Grafana are not required. The included stdlib-only
-`metrics-bridge.py` translates the subset consumed by Spark Dashboard into its
-expected vLLM metric names and proxies `/health` and `/v1/models`.
+`--metrics`; Prometheus and Grafana are not required. The recipe downloads a
+pinned revision of
+[LLM Serve Dashboard](https://github.com/Forge-the-Kingdom/llm-serve-dashboard),
+starts it with the model, and points it directly at llama-server port 30000.
+It displays GPU status, prompt/decode throughput, request pressure, context,
+model details, and host/network information.
 
-Point Spark Dashboard's vLLM adapter at the bridge:
+The dashboard listens on the LAN by default so it can be opened from another
+machine:
 
-```bash
-SPARK_DASHBOARD_ENGINE=vllm
-SPARK_DASHBOARD_ENGINE_URL=http://127.0.0.1:30001
+```text
+http://<spark-ip>:8092/
 ```
 
-The bridge reports running and waiting requests, prompt and generation token
-counters, and prompt-cache hit/query counters. Prefix cache queries are defined
-as all prompt tokens and hits as llama.cpp cached prompt tokens, so the
-resulting ratio is meaningful for this runtime.
+Its JSON feed is at `/metrics`. It is unauthenticated and includes host and LAN
+telemetry, so do not expose port 8092 beyond the trusted local network. Override
+the bind address or disable it when necessary:
+
+```bash
+DASHBOARD_BIND=127.0.0.1 ./start.sh
+ENABLE_DASHBOARD=false ./start.sh
+```
+
+## Existing Spark Dashboard compatibility
+
+The included stdlib-only `metrics-bridge.py` translates the subset consumed by
+the existing vLLM-oriented Spark Dashboard into its expected metric names and
+proxies `/health` and `/v1/models`. It is off by default now that the native
+dashboard is integrated. Enable it with:
+
+```bash
+ENABLE_METRICS_BRIDGE=true ./start.sh
+```
+
+Then point Spark Dashboard at `http://127.0.0.1:30001`. The bridge reports
+running and waiting requests, prompt and generation token counters, and
+prompt-cache hit/query counters. Prefix cache queries are all prompt tokens and
+hits are llama.cpp cached prompt tokens.
 
 This is a compatibility layer, not a claim that llama.cpp is vLLM. It cannot
 invent metrics llama.cpp does not export, including current KV-cache occupancy,
 or vLLM-only histograms such as TTFT, inter-token latency, preemption, and swap
 counters; dashboard panels requiring those metrics remain unavailable.
 The raw llama.cpp endpoint remains the source of truth.
-
-Disable the bridge if it is not needed:
-
-```bash
-ENABLE_METRICS_BRIDGE=false ./start.sh
-```
 
 ## Why llama.cpp instead of loading the GGUF in vLLM?
 
@@ -145,7 +163,7 @@ For a smaller single-slot validation:
 
 ```bash
 CONTEXT_PER_SLOT=262144 PARALLEL=1 PORT=30002 \
-METRICS_BRIDGE_PORT=30003 ./start.sh
+DASHBOARD_PORT=8093 ./start.sh
 ```
 
 ## Claude Code routing
@@ -167,4 +185,5 @@ stops an unrelated server or restarts Claude slots.
 ## License
 
 The recipe is MIT licensed. OxCoder weights are distributed separately under
-Apache 2.0. llama.cpp is distributed under its own MIT license.
+Apache 2.0. llama.cpp and LLM Serve Dashboard are distributed under their own
+MIT licenses.

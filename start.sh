@@ -13,21 +13,28 @@ PARALLEL="${PARALLEL:-4}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
 MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-32}"
-ENABLE_METRICS_BRIDGE="${ENABLE_METRICS_BRIDGE:-true}"
+ENABLE_METRICS_BRIDGE="${ENABLE_METRICS_BRIDGE:-false}"
 METRICS_BRIDGE_HOST="${METRICS_BRIDGE_HOST:-127.0.0.1}"
 METRICS_BRIDGE_PORT="${METRICS_BRIDGE_PORT:-30001}"
+ENABLE_DASHBOARD="${ENABLE_DASHBOARD:-true}"
+DASHBOARD_BIND="${DASHBOARD_BIND:-0.0.0.0}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-8092}"
 RECIPE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-$RECIPE_DIR/claude-chat-template.jinja}"
 METRICS_BRIDGE_FILE="$RECIPE_DIR/metrics-bridge.py"
 
 LLAMA_CPP_REVISION="${LLAMA_CPP_REVISION:-b31b71f3a076bfc4278daad442203a9c51c6e676}"
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-$HOME/.local/share/llama.cpp-oxcoder}"
+DASHBOARD_REVISION="${DASHBOARD_REVISION:-61950300878f450b413bdd3ddb231f8e57d33068}"
+DASHBOARD_DIR="${DASHBOARD_DIR:-$HOME/.local/share/llm-serve-dashboard}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.cache/huggingface/oxcoder-9b-gguf/$REVISION}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/oxcoder-9b-gguf}"
 PID_FILE="$STATE_DIR/server.pid"
 BRIDGE_PID_FILE="$STATE_DIR/metrics-bridge.pid"
+DASHBOARD_PID_FILE="$STATE_DIR/dashboard.pid"
 LOG_FILE="$STATE_DIR/server.log"
 BRIDGE_LOG_FILE="$STATE_DIR/metrics-bridge.log"
+DASHBOARD_LOG_FILE="$STATE_DIR/dashboard.log"
 
 for command in git cmake clang curl ss awk nproc python3; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -49,14 +56,18 @@ if [[ -z "$HF_CLI" ]]; then
 fi
 [[ -x "$HF_CLI" ]] || { echo "HF_CLI is not executable: $HF_CLI" >&2; exit 1; }
 [[ -s "$CHAT_TEMPLATE_FILE" ]] || { echo "chat template missing: $CHAT_TEMPLATE_FILE" >&2; exit 1; }
-[[ -s "$METRICS_BRIDGE_FILE" ]] || { echo "metrics bridge missing: $METRICS_BRIDGE_FILE" >&2; exit 1; }
+if [[ "$ENABLE_METRICS_BRIDGE" == "true" ]]; then
+  [[ -s "$METRICS_BRIDGE_FILE" ]] || { echo "metrics bridge missing: $METRICS_BRIDGE_FILE" >&2; exit 1; }
+fi
 
-case "$ENABLE_METRICS_BRIDGE" in
-  true|false) ;;
-  *) echo "ENABLE_METRICS_BRIDGE must be true or false" >&2; exit 2 ;;
-esac
+for toggle in ENABLE_METRICS_BRIDGE ENABLE_DASHBOARD; do
+  case "${!toggle}" in
+    true|false) ;;
+    *) echo "$toggle must be true or false" >&2; exit 2 ;;
+  esac
+done
 
-mkdir -p "$MODEL_DIR" "$STATE_DIR" "$(dirname "$LLAMA_CPP_DIR")"
+mkdir -p "$MODEL_DIR" "$STATE_DIR" "$(dirname "$LLAMA_CPP_DIR")" "$(dirname "$DASHBOARD_DIR")"
 
 echo "Ensuring $REPO/$MODEL_FILE@$REVISION is cached..."
 "$HF_CLI" download "$REPO" "$MODEL_FILE" \
@@ -104,6 +115,26 @@ if [[ "${BUILD_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ "$ENABLE_DASHBOARD" == "true" ]]; then
+  if [[ ! -d "$DASHBOARD_DIR/.git" ]]; then
+    [[ ! -e "$DASHBOARD_DIR" ]] || {
+      echo "refusing to replace non-git dashboard path: $DASHBOARD_DIR" >&2
+      exit 1
+    }
+    git clone https://github.com/Forge-the-Kingdom/llm-serve-dashboard.git "$DASHBOARD_DIR"
+  fi
+  if [[ -n "$(git -C "$DASHBOARD_DIR" status --porcelain)" ]]; then
+    echo "refusing to change dirty dashboard checkout: $DASHBOARD_DIR" >&2
+    exit 1
+  fi
+  git -C "$DASHBOARD_DIR" fetch --quiet origin "$DASHBOARD_REVISION"
+  git -C "$DASHBOARD_DIR" checkout --quiet --detach "$DASHBOARD_REVISION"
+  [[ -s "$DASHBOARD_DIR/fleet-metrics.py" && -s "$DASHBOARD_DIR/index.html" ]] || {
+    echo "dashboard checkout is incomplete: $DASHBOARD_DIR" >&2
+    exit 1
+  }
+fi
+
 if [[ -s "$PID_FILE" ]]; then
   old_pid="$(<"$PID_FILE")"
   if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
@@ -128,6 +159,11 @@ fi
 
 if [[ "$ENABLE_METRICS_BRIDGE" == "true" ]] && ss -H -ltn "sport = :$METRICS_BRIDGE_PORT" | grep -q .; then
   echo "refusing to start metrics bridge: port $METRICS_BRIDGE_PORT is already in use" >&2
+  exit 1
+fi
+
+if [[ "$ENABLE_DASHBOARD" == "true" ]] && ss -H -ltn "sport = :$DASHBOARD_PORT" | grep -q .; then
+  echo "refusing to start dashboard: port $DASHBOARD_PORT is already in use" >&2
   exit 1
 fi
 
@@ -160,8 +196,12 @@ cleanup_failed_start() {
   if [[ -n "${bridge_pid:-}" ]] && kill -0 "$bridge_pid" 2>/dev/null; then
     kill "$bridge_pid" 2>/dev/null || true
   fi
+  if [[ -n "${dashboard_pid:-}" ]] && kill -0 "$dashboard_pid" 2>/dev/null; then
+    kill "$dashboard_pid" 2>/dev/null || true
+  fi
   rm -f "$PID_FILE"
   rm -f "$BRIDGE_PID_FILE"
+  rm -f "$DASHBOARD_PID_FILE"
 }
 
 deadline=$(( $(date +%s) + 900 ))
@@ -211,8 +251,39 @@ if [[ "$ENABLE_METRICS_BRIDGE" == "true" ]]; then
   done
 fi
 
+if [[ "$ENABLE_DASHBOARD" == "true" ]]; then
+  echo "Starting native llama.cpp dashboard on $DASHBOARD_BIND:$DASHBOARD_PORT..."
+  nohup env \
+    FLEET_METRICS_BIND="$DASHBOARD_BIND" \
+    FLEET_METRICS_PORT="$DASHBOARD_PORT" \
+    WORKER_PORT_CANDIDATES="$PORT" \
+    python3 "$DASHBOARD_DIR/fleet-metrics.py" \
+    >"$DASHBOARD_LOG_FILE" 2>&1 &
+  dashboard_pid=$!
+  echo "$dashboard_pid" >"$DASHBOARD_PID_FILE"
+
+  dashboard_deadline=$(( $(date +%s) + 30 ))
+  while ! curl -fsS --max-time 2 "http://127.0.0.1:$DASHBOARD_PORT/health" >/dev/null; do
+    if ! kill -0 "$dashboard_pid" 2>/dev/null; then
+      echo "dashboard exited before becoming healthy" >&2
+      tail -100 "$DASHBOARD_LOG_FILE" >&2 || true
+      cleanup_failed_start
+      exit 1
+    fi
+    if (( $(date +%s) >= dashboard_deadline )); then
+      echo "dashboard health check timed out" >&2
+      cleanup_failed_start
+      exit 1
+    fi
+    sleep 1
+  done
+fi
+
 echo "OxCoder is healthy on port $PORT (pid $server_pid)"
 if [[ "$ENABLE_METRICS_BRIDGE" == "true" ]]; then
   echo "Spark Dashboard metrics: http://$METRICS_BRIDGE_HOST:$METRICS_BRIDGE_PORT"
+fi
+if [[ "$ENABLE_DASHBOARD" == "true" ]]; then
+  echo "Native llama.cpp dashboard: http://<DGX-IP>:$DASHBOARD_PORT"
 fi
 echo "Log: $LOG_FILE"

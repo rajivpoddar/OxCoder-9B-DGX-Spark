@@ -4,6 +4,9 @@ set -euo pipefail
 BASE_URL="${1:-http://127.0.0.1:30000}"
 MODEL="${2:-oxcoder-9b-q5-k-m}"
 METRICS_BRIDGE_URL="${METRICS_BRIDGE_URL:-http://127.0.0.1:30001}"
+ENABLE_METRICS_BRIDGE="${ENABLE_METRICS_BRIDGE:-false}"
+ENABLE_DASHBOARD="${ENABLE_DASHBOARD:-true}"
+DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:8092}"
 
 curl -fsS "$BASE_URL/health" >/dev/null
 models="$(curl -fsS "$BASE_URL/v1/models")"
@@ -11,10 +14,19 @@ grep -q "$MODEL" <<<"$models"
 metrics="$(curl -fsS "$BASE_URL/metrics")"
 grep -q '^llamacpp:' <<<"$metrics"
 python3 "$(dirname "$0")/metrics-bridge.py" --self-test
-bridge_metrics="$(curl -fsS "$METRICS_BRIDGE_URL/metrics")"
-grep -q '^vllm:num_requests_running ' <<<"$bridge_metrics"
-grep -q '^vllm:prompt_tokens_total ' <<<"$bridge_metrics"
-curl -fsS "$METRICS_BRIDGE_URL/v1/models" | grep -q "$MODEL"
+if [[ "$ENABLE_METRICS_BRIDGE" == "true" ]]; then
+  bridge_metrics="$(curl -fsS "$METRICS_BRIDGE_URL/metrics")"
+  grep -q '^vllm:num_requests_running ' <<<"$bridge_metrics"
+  grep -q '^vllm:prompt_tokens_total ' <<<"$bridge_metrics"
+  curl -fsS "$METRICS_BRIDGE_URL/v1/models" | grep -q "$MODEL"
+fi
+
+if [[ "$ENABLE_DASHBOARD" == "true" ]]; then
+  curl -fsS "$DASHBOARD_URL/health" >/dev/null
+  dashboard_metrics="$(curl -fsS "$DASHBOARD_URL/metrics")"
+  python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["worker_port"] == int(sys.argv[1]), data' \
+    "${BASE_URL##*:}" <<<"$dashboard_metrics"
+fi
 
 response="$(curl -fsS "$BASE_URL/v1/chat/completions" \
   -H 'content-type: application/json' \
