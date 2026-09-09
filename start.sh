@@ -257,7 +257,7 @@ if [[ "$ENABLE_DASHBOARD" == "true" ]]; then
     FLEET_METRICS_BIND="$DASHBOARD_BIND" \
     FLEET_METRICS_PORT="$DASHBOARD_PORT" \
     WORKER_PORT_CANDIDATES="$PORT" \
-    python3 "$DASHBOARD_DIR/fleet-metrics.py" \
+    python3 "$SCRIPT_DIR/threaded-dashboard.py" "$DASHBOARD_DIR/fleet-metrics.py" \
     >"$DASHBOARD_LOG_FILE" 2>&1 &
   dashboard_pid=$!
   echo "$dashboard_pid" >"$DASHBOARD_PID_FILE"
