@@ -1,13 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER="${CONTAINER:-neohorse-1-9b-sglang}"
+STATE_DIR="${STATE_DIR:-$HOME/.local/state/neohorse-1-9b-gguf}"
+PID_FILE="$STATE_DIR/server.pid"
 
-if ! docker container inspect "$CONTAINER" >/dev/null 2>&1; then
-  echo "No NeoHorse container named $CONTAINER exists."
+if [[ ! -s "$PID_FILE" ]]; then
+  echo "No managed NeoHorse process is recorded."
   exit 0
 fi
 
-docker stop "$CONTAINER" >/dev/null
-docker rm "$CONTAINER" >/dev/null
-echo "Stopped and removed $CONTAINER."
+pid="$(<"$PID_FILE")"
+if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+  echo "invalid PID file: $PID_FILE" >&2
+  exit 1
+fi
+
+if ! kill -0 "$pid" 2>/dev/null; then
+  rm -f "$PID_FILE"
+  echo "Removed stale NeoHorse PID file."
+  exit 0
+fi
+
+cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+if [[ "$cmdline" != *llama-server* || "$cmdline" != *NeoHorse-1-9B* ]]; then
+  echo "refusing to stop PID $pid because it is not the managed NeoHorse llama-server" >&2
+  exit 1
+fi
+
+kill "$pid"
+for _ in {1..30}; do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    echo "Stopped NeoHorse llama-server."
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "NeoHorse did not exit after SIGTERM; PID $pid remains running" >&2
+exit 1

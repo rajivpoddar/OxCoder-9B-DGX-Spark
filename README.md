@@ -1,108 +1,130 @@
-# NeoHorse-1-9B on one DGX Spark
+# NeoHorse-1-9B Q5_K_M on one DGX Spark
 
-Serve [TokenRhythm/NeoHorse-1-9B](https://huggingface.co/TokenRhythm/NeoHorse-1-9B) on a single NVIDIA DGX Spark with SGLang 0.5.19, native 262,144-token context, Qwen reasoning/tool parsers, and native OpenAI- and Anthropic-compatible APIs.
+Serve TokenRhythm's official
+[NeoHorse-1-9B Q5_K_M GGUF](https://huggingface.co/TokenRhythm/NeoHorse-1-9B-GGUF)
+on one NVIDIA DGX Spark with a native CUDA llama.cpp build.
 
-This repository is adapted from our [Ornith-1.5 DGX Spark recipe](https://github.com/rajivpoddar/Ornith-1.5-35B-A3B-DGX-Spark). It preserves its defensive download, memory, port, container, and readiness checks while removing Ornith-specific NVFP4, MoE, MTP, and b12x patches.
+This recipe follows NVIDIA's official
+[llama.cpp DGX Spark playbook](https://build.nvidia.com/spark/llama-cpp/instructions):
+CUDA is compiled for GB10 `sm_121`, model layers are offloaded to the GPU, and
+llama-server exposes an OpenAI-compatible API. The NeoHorse checkpoint and
+llama.cpp source revisions are pinned so a later upstream update cannot silently
+change the runtime.
 
 ## Defaults
 
 | Setting | Value |
 |---|---|
-| Checkpoint | `TokenRhythm/NeoHorse-1-9B` |
-| Pinned revision | `6cd9248d8070d8a0ad8d20aa19e2fe6848419e93` |
-| Weights | BF16, approximately 18 GB |
-| Runtime | `lmsysorg/sglang:v0.5.19-cu130` |
-| Context | 262,144 tokens |
-| Concurrent requests | 4 |
-| Reasoning parser | `qwen3` |
-| Tool parser | `qwen3_coder` |
-| Thinking | Off by default; set `ENABLE_THINKING=true` to enable |
-| Prometheus metrics | Enabled by default at `/metrics` |
+| Checkpoint | `TokenRhythm/NeoHorse-1-9B-GGUF` |
+| Quant | Official `Q5_K_M`, 6.47 GB |
+| Runtime | Native CUDA llama.cpp, pinned revision |
+| Context allocation | 65,536 tokens per slot |
+| Concurrent slots | 4 (262,144 tokens of shared KV allocation) |
+| KV cache | Q8_0 keys and values |
+| Thinking | Disabled server-side with `--reasoning off` |
+| Metrics | llama.cpp Prometheus endpoint at `/metrics` |
 | API | OpenAI-compatible, port 30000 |
 
-The model is text-only. The authors report that its base architecture can be extended toward one million tokens, but this recipe deliberately starts at the native, evaluated 262K context.
+The GGUF is text-only, embeds TokenRhythm's chat template, and has no MTP draft
+head. TokenRhythm reports short compatibility checks for thinking, tool calls,
+parallel tool calls, and tool-result continuation; it does not report a separate
+quantized quality benchmark.
 
-## Download without changing the live server
+## Install prerequisites
+
+The DGX Spark needs `git`, `clang`, `cmake`, the CUDA toolkit, the Hugging Face
+CLI, `curl`, and development packages required by llama.cpp. NVIDIA's base
+command is:
+
+```bash
+sudo apt update
+sudo apt install -y git clang cmake libcurl4-openssl-dev libssl-dev
+```
+
+Install the Hugging Face CLI if it is not already present:
+
+```bash
+python3 -m pip install --user -U huggingface_hub
+```
+
+## Stage without touching the live service
 
 ```bash
 DOWNLOAD_ONLY=1 ./start.sh
 ```
 
-This is safe to run while another inference backend is serving because it only populates the Hugging Face cache.
-The launcher accepts either `hf` or `huggingface-cli`. If the client is installed in a virtual environment outside `PATH`, set `HF_CLI=/absolute/path/to/hf`.
+This downloads only the pinned Q5_K_M artifact. It does not build the runtime,
+bind port 30000, stop another backend, or change any Claude slot.
 
 ## Start and validate
 
-Stop the active inference backend during a maintenance window, then:
+During an approved maintenance window, first stop the existing inference
+backend and confirm port 30000 is free. Then run:
 
 ```bash
 ./start.sh
 ./smoke-test.sh
 ```
 
-The launcher refuses to replace an existing NeoHorse container, refuses an occupied port, and requires at least 48 GiB of available host memory. Override conservative defaults when testing:
+`start.sh` builds the pinned llama.cpp revision using NVIDIA's GB10 CUDA flags,
+starts a managed background process, and waits for `/health`. It refuses an
+occupied port, a dirty llama.cpp checkout, a live recorded process, or less than
+32 GiB of available system memory.
+
+Useful inspection commands:
 
 ```bash
-PORT=30002 MAX_RUNNING_REQUESTS=2 CONTEXT_LENGTH=131072 ./start.sh
+curl -fsS http://127.0.0.1:30000/v1/models
+curl -fsS http://127.0.0.1:30000/metrics | grep '^llamacpp:' | head
+tail -f ~/.local/state/neohorse-1-9b-gguf/server.log
 ```
 
-Prometheus metrics are enabled by default for observability. Verify them with:
-
-```bash
-curl -fsS http://127.0.0.1:30000/metrics | grep '^sglang:' | head
-```
-
-Set `ENABLE_METRICS=false` only when intentionally running without metrics, and
-run the smoke test with `EXPECT_METRICS=false` in that case. Spark Dashboard's
-current inference adapter is vLLM-specific, so exposing this endpoint is the
-recipe-side prerequisite; the dashboard still needs an SGLang adapter before
-its inference panels can consume these metrics.
-
-Stop it with:
+Stop only the process managed by this recipe:
 
 ```bash
 ./stop.sh
 ```
 
-## Thinking behavior
+## Context and concurrency
 
-Thinking is disabled server-side by default using the model's native chat-template switch. A client may also send:
-
-```json
-{"chat_template_kwargs":{"enable_thinking":false}}
-```
-
-Set `ENABLE_THINKING=true` before launch to reproduce the thinking-enabled protocol used by the authors' published benchmark. Do not compare thinking-on quality results with thinking-off latency results as if they were the same workload.
-
-## Native Anthropic API for Claude Code
-
-SGLang exposes `/v1/messages` directly, so Claude Code does not need a protocol proxy. Point Claude Code at the DGX server:
+The pinned llama.cpp runtime exposes `--kv-unified-per-slot`, so the recipe
+allocates the context limit explicitly instead of relying on implicit division.
+The default `CONTEXT_PER_SLOT=65536 PARALLEL=4` allocates a 262,144-token shared
+KV pool. For a single native-context validation:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://192.168.68.113:30000"
-export ANTHROPIC_AUTH_TOKEN="dummy"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="neohorse-1-9b"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="neohorse-1-9b"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="neohorse-1-9b"
-claude
+CONTEXT_PER_SLOT=262144 PARALLEL=1 PORT=30002 ./start.sh
 ```
 
-Validate the native endpoint before pointing a Claude slot at it:
+Do not assume four independent 262K contexts will fit merely because the 6.47
+GB model weights fit. Increase the total context only after observing actual KV
+allocation and host memory.
+
+## Claude Code routing
+
+llama-server exposes an OpenAI-compatible API, not a native Anthropic Messages
+API. Keep Claude Code behind the existing CLIProxyAPI adapter and route that
+adapter to:
+
+```text
+http://127.0.0.1:30000/v1
+```
+
+Before moving a real slot, validate non-streaming output, streaming, tool calls,
+tool results, cancellation, and compaction through the exact CLIProxyAPI route.
+The included smoke test validates the direct llama-server side only.
+
+## Overrides
+
+All operational settings are environment-variable overrides. For example:
 
 ```bash
-curl -fsS http://192.168.68.113:30000/v1/messages \
-  -H 'content-type: application/json' \
-  -H 'x-api-key: dummy' \
-  -H 'anthropic-version: 2023-06-01' \
-  -d '{"model":"neohorse-1-9b","max_tokens":32,"messages":[{"role":"user","content":"Reply NEOHORSE_ANTHROPIC_OK"}]}'
+PORT=30002 PARALLEL=1 CONTEXT_PER_SLOT=131072 ./start.sh
 ```
 
-Before moving a slot, test non-streaming, streaming, tool calls, tool results, cancellation, and compaction through this exact native route.
-
-## Benchmark status
-
-No DGX Spark throughput claim is included yet. The upstream evaluation used SGLang 0.5.17 with thinking enabled, while this recipe uses SGLang 0.5.19 for its newer runtime and native Anthropic API fixes. The upstream evaluation did not publish Spark-specific TPS, concurrency, prefix-cache, or Claude Code results. Add measurements only after a clean local C1/C2/C4 sweep.
+The recipe never stops an unrelated server or restarts Claude slots.
 
 ## License
 
-The recipe retains the upstream repository's MIT license. NeoHorse weights are distributed separately under Apache 2.0.
+The recipe is MIT licensed. NeoHorse weights are distributed separately under
+Apache 2.0. llama.cpp is distributed under its own MIT license.

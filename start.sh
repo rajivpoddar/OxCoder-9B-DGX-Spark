@@ -1,34 +1,27 @@
 #!/usr/bin/env bash
-# Serve NeoHorse-1-9B on one NVIDIA DGX Spark with SGLang.
+# Serve the official NeoHorse Q5_K_M GGUF on one NVIDIA DGX Spark.
 set -euo pipefail
 
-IMAGE="${IMAGE:-lmsysorg/sglang:v0.5.19-cu130}"
-CONTAINER="${CONTAINER:-neohorse-1-9b-sglang}"
-REPO="TokenRhythm/NeoHorse-1-9B"
-REVISION="${REVISION:-6cd9248d8070d8a0ad8d20aa19e2fe6848419e93}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-neohorse-1-9b}"
+REPO="TokenRhythm/NeoHorse-1-9B-GGUF"
+REVISION="${REVISION:-ddcb4c939b5392c86a9d2733c7c0ed30db2554fd}"
+MODEL_FILE="${MODEL_FILE:-NeoHorse-1-9B-Q5_K_M.gguf}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-neohorse-1-9b-q5-k-m}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-30000}"
-CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
-MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-4}"
-MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.80}"
-ENABLE_THINKING="${ENABLE_THINKING:-false}"
-ENABLE_METRICS="${ENABLE_METRICS:-true}"
-MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-48}"
-HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
-CONTAINER_HF="/root/.cache/huggingface"
+CONTEXT_PER_SLOT="${CONTEXT_PER_SLOT:-65536}"
+PARALLEL="${PARALLEL:-4}"
+CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
+CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
+MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-32}"
 
-case "$ENABLE_THINKING" in
-  true|false) ;;
-  *) echo "ENABLE_THINKING must be true or false" >&2; exit 2 ;;
-esac
+LLAMA_CPP_REVISION="${LLAMA_CPP_REVISION:-b31b71f3a076bfc4278daad442203a9c51c6e676}"
+LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-$HOME/.local/share/llama.cpp-neohorse}"
+MODEL_DIR="${MODEL_DIR:-$HOME/.cache/huggingface/neohorse-1-9b-gguf/$REVISION}"
+STATE_DIR="${STATE_DIR:-$HOME/.local/state/neohorse-1-9b-gguf}"
+PID_FILE="$STATE_DIR/server.pid"
+LOG_FILE="$STATE_DIR/server.log"
 
-case "$ENABLE_METRICS" in
-  true|false) ;;
-  *) echo "ENABLE_METRICS must be true or false" >&2; exit 2 ;;
-esac
-
-for command in docker curl; do
+for command in git cmake clang curl ss awk nproc; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command not found: $command" >&2
     exit 1
@@ -42,100 +35,121 @@ if [[ -z "$HF_CLI" ]]; then
   elif command -v huggingface-cli >/dev/null 2>&1; then
     HF_CLI="$(command -v huggingface-cli)"
   else
-    echo "required Hugging Face CLI not found; set HF_CLI to an existing hf or huggingface-cli binary" >&2
+    echo "required Hugging Face CLI not found; set HF_CLI explicitly" >&2
     exit 1
   fi
 fi
 [[ -x "$HF_CLI" ]] || { echo "HF_CLI is not executable: $HF_CLI" >&2; exit 1; }
 
-if [[ -f "$HF_CACHE/token" ]]; then
-  HF_TOKEN="$(<"$HF_CACHE/token")"
-  export HF_TOKEN
-  export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
-fi
+mkdir -p "$MODEL_DIR" "$STATE_DIR" "$(dirname "$LLAMA_CPP_DIR")"
 
-echo "Ensuring $REPO@$REVISION is cached..."
-"$HF_CLI" download "$REPO" --revision "$REVISION"
-
-MODEL="$HF_CACHE/hub/models--TokenRhythm--NeoHorse-1-9B/snapshots/$REVISION"
-for required in config.json tokenizer_config.json model.safetensors.index.json chat_template.jinja; do
-  [[ -s "$MODEL/$required" ]] || {
-    echo "incomplete checkpoint: missing $MODEL/$required" >&2
-    exit 1
-  }
-done
+echo "Ensuring $REPO/$MODEL_FILE@$REVISION is cached..."
+"$HF_CLI" download "$REPO" "$MODEL_FILE" \
+  --revision "$REVISION" \
+  --local-dir "$MODEL_DIR"
+MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
+[[ -s "$MODEL_PATH" ]] || { echo "missing model file: $MODEL_PATH" >&2; exit 1; }
 
 if [[ "${DOWNLOAD_ONLY:-0}" == "1" ]]; then
-  echo "Download complete: $MODEL"
+  echo "Download complete: $MODEL_PATH"
   exit 0
 fi
 
-available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
-required_kib=$((MIN_AVAILABLE_GIB * 1024 * 1024))
-if (( available_kib < required_kib )); then
-  available_gib=$((available_kib / 1024 / 1024))
-  echo "refusing to start NeoHorse: ${available_gib} GiB available, ${MIN_AVAILABLE_GIB} GiB required" >&2
-  echo "stop the active inference backend in a maintenance window before retrying" >&2
+if [[ ! -d "$LLAMA_CPP_DIR/.git" ]]; then
+  [[ ! -e "$LLAMA_CPP_DIR" ]] || {
+    echo "refusing to replace non-git path: $LLAMA_CPP_DIR" >&2
+    exit 1
+  }
+  git clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"
+fi
+
+if [[ -n "$(git -C "$LLAMA_CPP_DIR" status --porcelain)" ]]; then
+  echo "refusing to change dirty llama.cpp checkout: $LLAMA_CPP_DIR" >&2
   exit 1
+fi
+
+git -C "$LLAMA_CPP_DIR" fetch --quiet origin "$LLAMA_CPP_REVISION"
+git -C "$LLAMA_CPP_DIR" checkout --quiet --detach "$LLAMA_CPP_REVISION"
+
+echo "Building llama.cpp $LLAMA_CPP_REVISION for GB10 (sm_121)..."
+cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" \
+  -DGGML_NATIVE=ON \
+  -DGGML_CUDA=ON \
+  -DGGML_CURL=ON \
+  -DGGML_RPC=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=121a-real \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j "$(nproc)"
+SERVER="$LLAMA_CPP_DIR/build/bin/llama-server"
+[[ -x "$SERVER" ]] || { echo "llama-server build missing: $SERVER" >&2; exit 1; }
+
+if [[ -s "$PID_FILE" ]]; then
+  old_pid="$(<"$PID_FILE")"
+  if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+    echo "refusing to replace running NeoHorse process $old_pid; run ./stop.sh first" >&2
+    exit 1
+  fi
+  rm -f "$PID_FILE"
 fi
 
 if ss -H -ltn "sport = :$PORT" | grep -q .; then
   echo "refusing to start NeoHorse: port $PORT is already in use" >&2
   exit 1
 fi
-if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
-  echo "refusing to replace existing container $CONTAINER; run ./stop.sh first" >&2
+
+available_kib="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
+required_kib=$((MIN_AVAILABLE_GIB * 1024 * 1024))
+if (( available_kib < required_kib )); then
+  available_gib=$((available_kib / 1024 / 1024))
+  echo "refusing to start NeoHorse: ${available_gib} GiB available, ${MIN_AVAILABLE_GIB} GiB required" >&2
   exit 1
 fi
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "Pulling $IMAGE..."
-  docker pull "$IMAGE"
-fi
+echo "Starting $SERVED_MODEL_NAME on port $PORT..."
+nohup "$SERVER" \
+  --model "$MODEL_PATH" \
+  --alias "$SERVED_MODEL_NAME" \
+  --host "$HOST" \
+  --port "$PORT" \
+  --parallel "$PARALLEL" \
+  --kv-unified-per-slot "$CONTEXT_PER_SLOT" \
+  --cont-batching \
+  --cache-prompt \
+  --flash-attn on \
+  --cache-type-k "$CACHE_TYPE_K" \
+  --cache-type-v "$CACHE_TYPE_V" \
+  --jinja \
+  --reasoning off \
+  --n-gpu-layers 99 \
+  --metrics \
+  >"$LOG_FILE" 2>&1 &
+server_pid=$!
+echo "$server_pid" >"$PID_FILE"
 
-MODEL_IN_CONTAINER="$CONTAINER_HF/${MODEL#"$HF_CACHE"/}"
-CHAT_TEMPLATE_KWARGS="{\"enable_thinking\":$ENABLE_THINKING}"
-METRICS_ARGS=()
-if [[ "$ENABLE_METRICS" == "true" ]]; then
-  METRICS_ARGS+=(--enable-metrics)
-fi
+cleanup_failed_start() {
+  if kill -0 "$server_pid" 2>/dev/null; then
+    kill "$server_pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+}
 
-docker run -d \
-  --name "$CONTAINER" \
-  --gpus all \
-  --network host \
-  --ipc=host \
-  -v "$HF_CACHE:$CONTAINER_HF:ro" \
-  "$IMAGE" \
-  python3 -m sglang.launch_server \
-    --model-path "$MODEL_IN_CONTAINER" \
-    --served-model-name "$SERVED_MODEL_NAME" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --tp-size 1 \
-    --context-length "$CONTEXT_LENGTH" \
-    --max-running-requests "$MAX_RUNNING_REQUESTS" \
-    --mem-fraction-static "$MEM_FRACTION_STATIC" \
-    --reasoning-parser qwen3 \
-    --tool-call-parser qwen3_coder \
-    "${METRICS_ARGS[@]}" \
-    --default-chat-template-kwargs "$CHAT_TEMPLATE_KWARGS"
-
-echo "Launched $CONTAINER; waiting for http://127.0.0.1:$PORT/health"
-deadline=$(( $(date +%s) + 1800 ))
+deadline=$(( $(date +%s) + 900 ))
 while :; do
-  if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  if ! kill -0 "$server_pid" 2>/dev/null; then
     echo "NeoHorse exited before becoming healthy" >&2
-    docker logs --tail 100 "$CONTAINER" >&2 || true
+    tail -100 "$LOG_FILE" >&2 || true
+    cleanup_failed_start
     exit 1
   fi
   if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/health" >/dev/null; then
-    echo "NeoHorse is healthy on port $PORT"
+    echo "NeoHorse is healthy on port $PORT (pid $server_pid)"
+    echo "Log: $LOG_FILE"
     exit 0
   fi
   if (( $(date +%s) >= deadline )); then
     echo "health check timed out" >&2
-    docker logs --tail 100 "$CONTAINER" >&2 || true
+    tail -100 "$LOG_FILE" >&2 || true
+    cleanup_failed_start
     exit 1
   fi
   sleep 2
