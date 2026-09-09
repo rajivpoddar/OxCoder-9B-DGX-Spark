@@ -16,6 +16,9 @@ SPEC_TYPE="${SPEC_TYPE:-ngram-mod}"
 SPEC_NGRAM_MATCH="${SPEC_NGRAM_MATCH:-24}"
 SPEC_NGRAM_MIN="${SPEC_NGRAM_MIN:-48}"
 SPEC_NGRAM_MAX="${SPEC_NGRAM_MAX:-64}"
+DFLASH_REVISION="${DFLASH_REVISION:-5fc3b3d474760f18c516db87d84c37edbfd3ede6}"
+DFLASH_MODEL="${DFLASH_MODEL:-$HOME/.cache/huggingface/oxcoder-dflash/$DFLASH_REVISION/Qwen3.5-9B-DFlash-BF16.gguf}"
+SPEC_DRAFT_MAX="${SPEC_DRAFT_MAX:-3}"
 MIN_AVAILABLE_GIB="${MIN_AVAILABLE_GIB:-32}"
 ENABLE_METRICS_BRIDGE="${ENABLE_METRICS_BRIDGE:-false}"
 METRICS_BRIDGE_HOST="${METRICS_BRIDGE_HOST:-127.0.0.1}"
@@ -82,8 +85,20 @@ case "$SPEC_TYPE" in
       --spec-ngram-mod-n-max "$SPEC_NGRAM_MAX"
     )
     ;;
+  draft-dflash)
+    [[ -s "$DFLASH_MODEL" ]] || {
+      echo "DFlash GGUF missing: $DFLASH_MODEL; run ./prepare-dflash.sh first" >&2
+      exit 1
+    }
+    [[ "$SPEC_DRAFT_MAX" =~ ^[1-9][0-9]*$ ]] && (( SPEC_DRAFT_MAX <= 15 )) || {
+      echo "SPEC_DRAFT_MAX must be 1-15 for the pinned 16-token DFlash block" >&2
+      exit 2
+    }
+    SPEC_ARGS=(--spec-type draft-dflash --model-draft "$DFLASH_MODEL"
+      --spec-draft-n-max "$SPEC_DRAFT_MAX" --spec-draft-ngl 99)
+    ;;
   *)
-    echo "unsupported SPEC_TYPE: $SPEC_TYPE (expected none or ngram-mod)" >&2
+    echo "unsupported SPEC_TYPE: $SPEC_TYPE (expected none, ngram-mod or draft-dflash)" >&2
     exit 2
     ;;
 esac

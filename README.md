@@ -166,6 +166,49 @@ repetitive coding/editing workloads. Disable it for an A/B baseline with
 `SPEC_TYPE=none`, or tune it with `SPEC_NGRAM_MATCH`, `SPEC_NGRAM_MIN`, and
 `SPEC_NGRAM_MAX` (defaults: `24`, `48`, and `64`).
 
+### Learned DFlash speculation (experimental)
+
+The pinned runtime supports [Z-Lab's Qwen3.5-9B DFlash draft](https://huggingface.co/z-lab/Qwen3.5-9B-DFlash).
+This is trained for OxCoder's base, not for OxCoder itself: acceptance and speed
+on the fine-tuned Q5_K_M target must be measured. This is not native MTP and
+does not add an MTP head to the target GGUF.
+
+Stage the pinned draft and convert it to BF16 GGUF using OxCoder's pinned
+tokenizer/config. This CPU-only step does not interrupt serving; `PYTHON` must
+point to an environment with the pinned llama.cpp converter's dependencies:
+
+```bash
+PYTHON=/path/to/converter-venv/bin/python ./prepare-dflash.sh
+```
+
+Then, during a maintenance window, launch with:
+
+```bash
+SPEC_TYPE=draft-dflash SPEC_DRAFT_MAX=3 ./start.sh
+```
+
+`SPEC_DRAFT_MAX` is limited to 1-15 for this draft's trained 16-token block.
+The draft is GPU-offloaded. No ngram mode is mixed into the DFlash experiment.
+The systemd unit optionally reads `speculation.env` (see the example) so the
+chosen mode survives service restarts. A missing draft fails before starting
+the target; it does not silently fall back to ngram.
+
+With all normal clients paused, run the same synthetic two-turn coding cases
+against `SPEC_TYPE=none`, then against DFlash after a service restart:
+
+```bash
+python3 benchmark-speculation.py --label none
+python3 benchmark-speculation.py --label dflash-3
+```
+
+The benchmark reports C1/C4 at approximately 4K/100K prompt tokens, cold and
+follow-up TTFT, native per-request timings, end-to-end throughput (including
+prefill), output hashes and draft acceptance. It never executes generated code.
+Also run API/tool-call smoke tests. Do not equate acceptance with speedup or
+compare these measurements with B200/SGLang benchmarks as if hardware and
+workloads matched. Roll back by setting `SPEC_TYPE=none` or `ngram-mod` and
+restarting the service; target model and Claude route remain unchanged.
+
 For a smaller single-slot validation:
 
 ```bash
