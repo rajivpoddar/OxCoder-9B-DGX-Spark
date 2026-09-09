@@ -30,7 +30,7 @@
 {%- if not messages %}{{- raise_exception('No messages provided.') }}{%- endif %}
 
 {# Claude Code may send multiple system blocks. Consolidate all of them into
-   the single leading system turn required by NeoHorse's Qwen chat format. #}
+   the single leading system turn required by OxCoder's Qwen chat format. #}
 {%- if tools and tools is iterable and tools is not mapping %}
     {{- '<|im_start|>system\n' }}
     {{- "# Tools\n\nYou have access to the following functions:\n\n<tools>" }}
