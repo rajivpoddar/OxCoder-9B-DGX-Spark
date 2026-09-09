@@ -83,6 +83,12 @@ cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j "
 SERVER="$LLAMA_CPP_DIR/build/bin/llama-server"
 [[ -x "$SERVER" ]] || { echo "llama-server build missing: $SERVER" >&2; exit 1; }
 
+if [[ "${BUILD_ONLY:-0}" == "1" ]]; then
+  echo "Build complete: $SERVER"
+  echo "Model ready: $MODEL_PATH"
+  exit 0
+fi
+
 if [[ -s "$PID_FILE" ]]; then
   old_pid="$(<"$PID_FILE")"
   if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then

@@ -56,6 +56,15 @@ DOWNLOAD_ONLY=1 ./start.sh
 This downloads only the pinned Q5_K_M artifact. It does not build the runtime,
 bind port 30000, stop another backend, or change any Claude slot.
 
+To download the model and compile the pinned CUDA runtime without starting a
+server:
+
+```bash
+BUILD_ONLY=1 ./start.sh
+```
+
+This is the preferred preparation step while another model is live.
+
 ## Start and validate
 
 During an approved maintenance window, first stop the existing inference
