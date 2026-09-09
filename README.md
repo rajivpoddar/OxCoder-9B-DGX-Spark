@@ -18,17 +18,19 @@ change the runtime.
 | Checkpoint | `TokenRhythm/NeoHorse-1-9B-GGUF` |
 | Quant | Official `Q5_K_M`, 6.47 GB |
 | Runtime | Native CUDA llama.cpp, pinned revision |
-| Context allocation | 65,536 tokens per slot |
-| Concurrent slots | 4 (262,144 tokens of shared KV allocation) |
+| Context allocation | 262,144 tokens per slot |
+| Concurrent slots | 4 (1,048,576 tokens of shared KV allocation) |
 | KV cache | Q8_0 keys and values |
 | Thinking | Disabled server-side with `--reasoning off` |
 | Metrics | llama.cpp Prometheus endpoint at `/metrics` |
-| API | OpenAI-compatible, port 30000 |
+| API | OpenAI and Anthropic Messages-compatible, port 30000 |
 
-The GGUF is text-only, embeds TokenRhythm's chat template, and has no MTP draft
-head. TokenRhythm reports short compatibility checks for thinking, tool calls,
-parallel tool calls, and tool-result continuation; it does not report a separate
-quantized quality benchmark.
+The GGUF is text-only and has no MTP draft head. The recipe supplies a
+Claude-compatible variant of TokenRhythm's chat template that consolidates
+Claude Code's multiple system blocks into the single leading system turn the
+model expects. TokenRhythm reports short compatibility checks for thinking,
+tool calls, parallel tool calls, and tool-result continuation; it does not
+report a separate quantized quality benchmark.
 
 ## Install prerequisites
 
@@ -98,30 +100,30 @@ Stop only the process managed by this recipe:
 
 The pinned llama.cpp runtime exposes `--kv-unified-per-slot`, so the recipe
 allocates the context limit explicitly instead of relying on implicit division.
-The default `CONTEXT_PER_SLOT=65536 PARALLEL=4` allocates a 262,144-token shared
-KV pool. For a single native-context validation:
+The default `CONTEXT_PER_SLOT=262144 PARALLEL=4` allocates a 1,048,576-token
+shared KV pool: four independent native-context slots. On a 128 GB DGX Spark,
+the validated Q5_K_M configuration uses about 27.7 GiB after load. For a smaller
+single-slot validation:
 
 ```bash
 CONTEXT_PER_SLOT=262144 PARALLEL=1 PORT=30002 ./start.sh
 ```
 
-Do not assume four independent 262K contexts will fit merely because the 6.47
-GB model weights fit. Increase the total context only after observing actual KV
-allocation and host memory.
+Reduce `PARALLEL` or `CONTEXT_PER_SLOT` when sharing the host with another
+memory-intensive service.
 
 ## Claude Code routing
 
-llama-server exposes an OpenAI-compatible API, not a native Anthropic Messages
-API. Keep Claude Code behind the existing CLIProxyAPI adapter and route that
-adapter to:
+The pinned llama-server exposes both OpenAI-compatible endpoints and native
+Anthropic Messages at `/v1/messages`. Claude Code can connect directly to:
 
 ```text
-http://127.0.0.1:30000/v1
+http://127.0.0.1:30000
 ```
 
 Before moving a real slot, validate non-streaming output, streaming, tool calls,
-tool results, cancellation, and compaction through the exact CLIProxyAPI route.
-The included smoke test validates the direct llama-server side only.
+tool results, and Claude's multi-system request shape. The included smoke test
+checks both OpenAI and Anthropic endpoints.
 
 ## Overrides
 
